@@ -14,9 +14,42 @@ def get_ticker_info(ticker: str) -> dict:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_price_history(ticker: str, period: str = "1y") -> pd.DataFrame:
-    """Fetch historical OHLCV price data for a ticker. Cached for 5 minutes."""
+    """Fetch historical OHLCV price data for a ticker. Cached for 5 minutes.
+
+    yfinance sometimes includes a trailing row for the current, still-open
+    session with no data yet (all-NaN OHLC) — that row is dropped so charts
+    and price calculations never end on an empty bar.
+    """
     stock = yf.Ticker(ticker)
-    return stock.history(period=period)
+    history = stock.history(period=period)
+    if "Close" in history.columns:
+        history = history.dropna(subset=["Close"])
+    return history
+
+
+def get_current_price_and_change(ticker: str, period: str = "5d"):
+    """Return (current_price, pct_change) from the last two daily closes.
+
+    Works across every asset class (stocks, crypto, forex, metals, indices)
+    since it reads directly from price history rather than the inconsistent
+    `.info` fields those asset types don't all populate. Returns (None, None)
+    if no data is available for the ticker.
+    """
+    try:
+        history = get_price_history(ticker, period=period)
+    except Exception:
+        return None, None
+
+    if history.empty or "Close" not in history.columns:
+        return None, None
+
+    current_price = history["Close"].iloc[-1]
+    if len(history) < 2:
+        return current_price, None
+
+    previous_close = history["Close"].iloc[-2]
+    pct_change = (current_price - previous_close) / previous_close * 100 if previous_close else None
+    return current_price, pct_change
 
 
 def is_valid_ticker(info: dict) -> bool:
