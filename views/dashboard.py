@@ -1,118 +1,155 @@
-"""EquityLens — Dashboard: the 30-second view of the day."""
+"""EquityLens — Dashboard: a 10-second read on global markets.
+
+Global Markets, Major Assets, and Market Movers are all real, live data —
+fetched once at the top of this script and reused across sections so the
+page makes exactly one pass over the network per load. The AI Market Brief,
+Today's Watchlist, and Economic Calendar are illustrative sample content
+(see dashboard_content.py) — there is no news feed, calendar API, or AI
+model behind them yet, and each is labeled "Sample data" for that reason.
+"""
 
 from datetime import datetime
 
 import streamlit as st
 
-from theme import apply_theme
-from components import compact_placeholder, price_pill, render_html, rating_badge_html
-from assets import MARKETS_TODAY
-from data_fetcher import get_current_price_and_change, get_ticker_info, get_extended_metrics
-from scoring import calculate_financial_health
-from watchlist_store import load_watchlists
+from theme import apply_theme, INK_PRIMARY, INK_SECONDARY, INK_MUTED, BORDER
+from components import section_header, market_table, render_html
+from assets import GLOBAL_MARKETS, MAJOR_ASSETS
+from data_fetcher import get_current_price_and_change
+from dashboard_content import get_market_brief, get_todays_watchlist, get_economic_calendar
 
 st.set_page_config(page_title="EquityLens — Dashboard", layout="wide")
 apply_theme()
 
-# ---------- Welcome ----------
-hour = datetime.now().hour
-greeting = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
-st.markdown(f"## {greeting}, welcome to EquityLens")
-st.caption(datetime.now().strftime("%A, %B %d, %Y") + " · What you need to know in the next 30 seconds.")
+st.markdown("## Dashboard")
+st.caption(datetime.now().strftime("%A, %B %d, %Y") + " · Market data via Yahoo Finance, delayed")
 
 st.write("")
 
-# ---------- Markets Today ----------
-st.markdown("#### Markets Today")
-cols = st.columns(len(MARKETS_TODAY))
-for col, (label, ticker) in zip(cols, MARKETS_TODAY):
+# ---------- Fetch every tracked asset once, reused across sections below ----------
+tracked_assets = GLOBAL_MARKETS + MAJOR_ASSETS
+market_data = []
+for label, ticker in tracked_assets:
     price, pct_change = get_current_price_and_change(ticker)
-    with col:
-        price_pill(label, price, pct_change, align="center")
+    market_data.append({"label": label, "price": price, "pct_change": pct_change})
+
+global_rows = [(d["label"], d["price"], d["pct_change"]) for d in market_data[: len(GLOBAL_MARKETS)]]
+asset_rows = [(d["label"], d["price"], d["pct_change"]) for d in market_data[len(GLOBAL_MARKETS):]]
+
+movable = [d for d in market_data if d["pct_change"] is not None]
+gainers = sorted(movable, key=lambda d: d["pct_change"], reverse=True)[:3]
+losers = sorted(movable, key=lambda d: d["pct_change"])[:3]
+gainer_rows = [(d["label"], d["price"], d["pct_change"]) for d in gainers]
+loser_rows = [(d["label"], d["price"], d["pct_change"]) for d in losers]
+
+# ---------- AI Market Brief — the focal point ----------
+brief = get_market_brief()
+section_header("AI Market Brief", tag="Sample data")
+
+with st.container(border=True):
+    render_html(
+        f"""
+        <div style="font-size:1.4rem; font-weight:700; color:{INK_PRIMARY}; line-height:1.35; margin-bottom:16px;">
+            {brief['headline']}
+        </div>
+        """
+    )
+    for paragraph in brief["summary"]:
+        render_html(
+            f'<p style="color:{INK_SECONDARY}; font-size:0.95rem; line-height:1.7; margin-bottom:12px;">{paragraph}</p>'
+        )
+
+    render_html(f'<hr style="margin:18px 0 16px 0; border-color:{BORDER};">')
+
+    watch_cols = st.columns(len(brief["watch_items"]))
+    for col, item in zip(watch_cols, brief["watch_items"]):
+        with col:
+            render_html(
+                f"""
+                <div style="font-size:0.72rem; font-weight:700; text-transform:uppercase;
+                            letter-spacing:0.05em; color:{INK_MUTED}; margin-bottom:6px;">
+                    {item['label']}
+                </div>
+                <div style="font-size:0.86rem; color:{INK_PRIMARY}; line-height:1.55;">
+                    {item['detail']}
+                </div>
+                """
+            )
 
 st.write("")
 
-# ---------- AI Market Brief + Quick Navigation ----------
-brief_col, nav_col = st.columns([1.3, 1])
+# ---------- Global Markets | Major Assets ----------
+gm_col, ma_col = st.columns(2)
 
-with brief_col:
-    st.markdown("#### AI Market Brief")
-    compact_placeholder("Daily AI market summary")
+with gm_col:
+    st.markdown("#### Global Markets")
+    with st.container(border=True):
+        market_table(global_rows)
 
-with nav_col:
-    st.markdown("#### Quick Navigation")
-    nav_items = [
-        ("Market Research", "views/market_research.py"),
-        ("Trade Studio", "views/trade_studio.py"),
-        ("Watchlists", "views/watchlists.py"),
-        ("Settings", "views/settings.py"),
-    ]
-    for label, target in nav_items:
-        st.page_link(target, label=label, use_container_width=True)
+with ma_col:
+    st.markdown("#### Major Assets")
+    with st.container(border=True):
+        market_table(asset_rows)
 
 st.write("")
 
-# ---------- Watchlist Preview + Recent News ----------
-preview_col, news_col = st.columns([1.3, 1])
+# ---------- Market Movers ----------
+st.markdown("#### Market Movers")
+st.caption("Biggest gainers and losers across all tracked global markets and major assets.")
 
-with preview_col:
-    st.markdown("#### Watchlist Preview — Long-Term Investing")
-    watchlist_tickers = load_watchlists().get("Long-Term Investing", [])[:5]
-    if not watchlist_tickers:
-        st.caption("Your Long-Term Investing watchlist is empty. Add tickers on the Watchlists page.")
-    else:
-        preview_cols = st.columns(len(watchlist_tickers))
-        for col, ticker in zip(preview_cols, watchlist_tickers):
-            price, pct_change = get_current_price_and_change(ticker)
-            with col:
-                price_pill(ticker, price, pct_change, align="center")
-
-with news_col:
-    st.markdown("#### Recent News")
-    compact_placeholder("Headlines for your watchlists")
+mv_col1, mv_col2 = st.columns(2)
+with mv_col1:
+    st.markdown("###### Gainers")
+    with st.container(border=True):
+        if gainer_rows:
+            market_table(gainer_rows)
+        else:
+            st.caption("No data available.")
+with mv_col2:
+    st.markdown("###### Losers")
+    with st.container(border=True):
+        if loser_rows:
+            market_table(loser_rows)
+        else:
+            st.caption("No data available.")
 
 st.write("")
 
-# ---------- Financial Health Leaderboard + Market Sentiment ----------
-leaderboard_col, sentiment_col = st.columns([1.3, 1])
+# ---------- Today's Watchlist | Economic Calendar ----------
+tw_col, ec_col = st.columns(2)
 
-with leaderboard_col:
-    st.markdown("#### Financial Health Leaderboard")
-    st.caption("Ranked by the same rule-based Financial Health Score used on Market Research.")
+with tw_col:
+    section_header("Today's Watchlist", tag="Sample data")
+    with st.container(border=True):
+        items = get_todays_watchlist()
+        for i, item in enumerate(items):
+            render_html(
+                f'<div style="padding:5px 0; font-size:0.88rem;">'
+                f'<b style="color:{INK_PRIMARY};">{item["asset"]}</b>'
+                f'<span style="color:{INK_SECONDARY};"> — {item["note"]}</span></div>'
+            )
+            if i < len(items) - 1:
+                render_html(f'<hr style="margin:4px 0; border-color:{BORDER};">')
 
-    LEADERBOARD_TICKERS = ["AAPL", "MSFT", "TSLA", "JNJ", "KO", "NVDA"]
-    rows = []
-    for ticker in LEADERBOARD_TICKERS:
-        info = get_ticker_info(ticker)
-        if not info or info.get("currentPrice") is None:
-            continue
-        metrics = get_extended_metrics(info)
-        health = calculate_financial_health(info, metrics)
-        name = info.get("longName") or info.get("shortName") or ticker
-        rows.append((ticker, name, health["total_score"], health["rating"]))
-
-    rows.sort(key=lambda r: r[2], reverse=True)
-
-    if not rows:
-        st.info("No leaderboard data available right now.")
-    else:
-        header_cols = st.columns([0.5, 1, 2.2, 1, 1.1])
-        header_cols[0].markdown("**Rank**")
-        header_cols[1].markdown("**Ticker**")
-        header_cols[2].markdown("**Company**")
-        header_cols[3].markdown("**Score**")
-        header_cols[4].markdown("**Rating**")
-        st.divider()
-
-        for rank, (ticker, name, score, rating) in enumerate(rows, start=1):
-            row_cols = st.columns([0.5, 1, 2.2, 1, 1.1])
-            row_cols[0].markdown(f"#{rank}")
-            row_cols[1].markdown(f"**{ticker}**")
-            row_cols[2].markdown(name)
-            row_cols[3].markdown(f"{score}/100")
-            with row_cols[4]:
-                render_html(rating_badge_html(rating))
-
-with sentiment_col:
-    st.markdown("#### Market Sentiment")
-    compact_placeholder("Bullish vs. bearish positioning")
+with ec_col:
+    section_header("Economic Calendar", tag="Sample data")
+    with st.container(border=True):
+        events = get_economic_calendar()
+        for i, event in enumerate(events):
+            is_high = event["impact"] == "High"
+            impact_color = INK_PRIMARY if is_high else INK_SECONDARY
+            impact_weight = "700" if is_high else "500"
+            render_html(
+                f"""
+                <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0;">
+                    <div>
+                        <div style="color:{INK_PRIMARY}; font-weight:600; font-size:0.87rem;">{event['event']}</div>
+                        <div style="color:{INK_MUTED}; font-size:0.76rem;">{event['when']}</div>
+                    </div>
+                    <span style="color:{impact_color}; font-weight:{impact_weight}; font-size:0.76rem;
+                                text-transform:uppercase; letter-spacing:0.03em;">{event['impact']}</span>
+                </div>
+                """
+            )
+            if i < len(events) - 1:
+                render_html(f'<hr style="margin:4px 0; border-color:{BORDER};">')

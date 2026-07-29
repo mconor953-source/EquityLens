@@ -90,6 +90,16 @@ def format_price(value) -> str:
     return f"${value:,.2f}"
 
 
+def format_market_price(value) -> str:
+    """Format a price with precision appropriate to its magnitude: more
+    decimals for sub-$10 instruments (most forex pairs trade near 1.00-1.50
+    and need that precision to show meaningful movement), standard cents
+    otherwise. Same convention already used inline on Market Research."""
+    if value is None:
+        return "N/A"
+    return f"${value:,.4f}" if value < 10 else f"${value:,.2f}"
+
+
 def format_percentage(value) -> str:
     """Format a fractional ratio as a percentage, e.g. 0.166 -> '16.60%'."""
     if value is None:

@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-from theme import apply_theme
+from theme import apply_theme, INK_SECONDARY, INK_MUTED, BORDER, WHITE
 from components import price_change_html, rating_badge_html, render_html
 from data_fetcher import get_current_price_and_change, get_ticker_info, get_extended_metrics, is_valid_ticker
 from scoring import calculate_financial_health
@@ -43,7 +43,7 @@ with long_term_tab:
         price, pct_change = get_current_price_and_change(ticker)
         info = get_ticker_info(ticker)
 
-        score_html = '<span style="color:#5B6B82;">N/A</span>'
+        score_html = f'<span style="color:{INK_SECONDARY};">N/A</span>'
         if is_valid_ticker(info):
             metrics = get_extended_metrics(info)
             health = calculate_financial_health(info, metrics)
@@ -57,7 +57,7 @@ with long_term_tab:
         if row_col5.button("Remove", key=f"remove_Long-Term Investing_{ticker}"):
             remove_ticker("Long-Term Investing", ticker)
             st.rerun()
-        st.markdown('<hr style="margin:4px 0; border-color:#E2E8F0;">', unsafe_allow_html=True)
+        st.markdown(f'<hr style="margin:4px 0; border-color:{BORDER};">', unsafe_allow_html=True)
 
 # ---------- Swing Trade Watchlist ----------
 with swing_tab:
@@ -83,7 +83,7 @@ with swing_tab:
                         <span style="font-weight:700;">{f"${price:,.2f}" if price is not None else "N/A"}</span>
                     </div>
                     <div style="margin-bottom:10px;">{price_change_html(pct_change)}</div>
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; font-size:0.85rem; color:#5B6B82;">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; font-size:0.85rem; color:{INK_SECONDARY};">
                         <div>Current Trend: <b>—</b></div>
                         <div>Status: <b>—</b></div>
                         <div>Distance to Entry: <b>—</b></div>
@@ -91,9 +91,9 @@ with swing_tab:
                         <div>Resistance: <b>—</b></div>
                         <div>Alert Status: <b>—</b></div>
                     </div>
-                    <div style="display:inline-block; margin-top:12px; padding:3px 12px; border-radius:999px;
-                                background-color:#F4F7FB; color:#5B6B82; font-size:0.7rem; font-weight:700;
-                                letter-spacing:0.03em; text-transform:uppercase;">Planned feature</div>
+                    <div style="display:inline-block; margin-top:12px; padding:3px 12px; border-radius:6px;
+                                background-color:{WHITE}; border:1px solid {BORDER}; color:{INK_MUTED}; font-size:0.68rem; font-weight:700;
+                                letter-spacing:0.04em; text-transform:uppercase;">Planned feature</div>
                 </div>
                 """
             )

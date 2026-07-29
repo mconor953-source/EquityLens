@@ -8,8 +8,9 @@ import textwrap
 
 import streamlit as st
 
-from theme import RATING_COLORS, UP_COLOR, DOWN_COLOR, INK_SECONDARY, INK_PRIMARY
+from theme import RATING_COLORS, UP_COLOR, DOWN_COLOR, INK_SECONDARY, INK_PRIMARY, INK_MUTED, BORDER, CARD_BG, RADIUS_SM
 from assets import PREDEFINED_ASSETS
+from data_fetcher import format_market_price
 
 CUSTOM_OPTION = "Custom ticker..."
 
@@ -27,8 +28,19 @@ def render_html(html: str) -> None:
     st.markdown(textwrap.dedent(html).strip(), unsafe_allow_html=True)
 
 
-def section_header(title: str, subtitle: str = None) -> None:
-    st.markdown(f"#### {title}")
+def section_header(title: str, subtitle: str = None, tag: str = None) -> None:
+    """A section title, optionally paired with a small tag (e.g. 'Sample
+    data') aligned to its right — used so illustrative content is always
+    labeled honestly right where it's introduced."""
+    if tag:
+        header_col, tag_col = st.columns([5, 1.6])
+        with header_col:
+            st.markdown(f"#### {title}")
+        with tag_col:
+            st.write("")
+            render_html(sample_tag(tag))
+    else:
+        st.markdown(f"#### {title}")
     if subtitle:
         st.caption(subtitle)
 
@@ -42,21 +54,28 @@ def compact_placeholder(label: str, tag: str = "Planned feature") -> None:
     render_html(
         f"""
         <div style="display:flex; justify-content:space-between; align-items:center;
-                    background-color:#F4F7FB; border:1px solid #E2E8F0; border-radius:10px;
+                    background-color:{CARD_BG}; border:1px solid {BORDER}; border-radius:{RADIUS_SM};
                     padding:10px 14px; margin-bottom:8px;">
-            <span style="font-weight:600; color:{INK_PRIMARY}; font-size:0.88rem;">{label}</span>
-            <span style="color:{INK_SECONDARY}; font-size:0.72rem; font-weight:700;
-                        text-transform:uppercase; letter-spacing:0.03em;">{tag}</span>
+            <span style="font-weight:600; color:{INK_PRIMARY}; font-size:0.87rem;">{label}</span>
+            <span style="color:{INK_MUTED}; font-size:0.7rem; font-weight:700;
+                        text-transform:uppercase; letter-spacing:0.04em;">{tag}</span>
         </div>
         """
     )
 
 
 def rating_badge_html(rating: str) -> str:
-    """Inline HTML for a Financial Health rating badge, embeddable inside a
-    larger st.markdown(..., unsafe_allow_html=True) call."""
+    """Inline HTML for a Financial Health rating indicator — a small colored
+    dot plus neutral text, in the style of a status chip rather than a
+    filled colored pill. Embeddable inside a larger
+    st.markdown(..., unsafe_allow_html=True) call."""
     color = RATING_COLORS.get(rating, INK_SECONDARY)
-    return f'<span class="el-badge" style="background-color:{color}22; color:{color};">{rating}</span>'
+    return (
+        f'<span style="display:inline-flex; align-items:center; gap:6px; '
+        f'font-weight:600; font-size:0.85rem; color:{INK_PRIMARY};">'
+        f'<span style="width:7px; height:7px; border-radius:50%; background-color:{color}; '
+        f'display:inline-block; flex-shrink:0;"></span>{rating}</span>'
+    )
 
 
 def render_rating_badge(rating: str) -> None:
@@ -73,18 +92,39 @@ def price_change_html(pct_change) -> str:
     return f'<span style="color:{color}; font-weight:700;">{arrow} {pct_change:+.2f}%</span>'
 
 
-def price_pill(label: str, price, pct_change, align: str = "left") -> None:
-    """A compact price + % change stat card, used in dense strips like
-    Markets Today and watchlist rows."""
-    price_str = f"${price:,.2f}" if price is not None else "N/A"
-    render_html(
-        f"""
-        <div class="el-card" style="padding:14px 16px; margin-bottom:10px; text-align:{align};">
-            <div class="el-card-subtext">{label}</div>
-            <div style="font-size:1.1rem; font-weight:700; color:{INK_PRIMARY};">{price_str}</div>
-            <div style="font-size:0.82rem;">{price_change_html(pct_change)}</div>
-        </div>
-        """
+def market_row(label: str, price, pct_change) -> None:
+    """One dense row of a market-data table: label | price | change.
+
+    This is what replaces one-card-per-asset with a single scannable table
+    inside one card — the pattern that makes market data read like a
+    terminal rather than a grid of separate widgets.
+    """
+    label_col, price_col, change_col = st.columns([2, 1.3, 1.3])
+    label_col.markdown(f"**{label}**")
+    price_col.markdown(format_market_price(price))
+    with change_col:
+        render_html(price_change_html(pct_change))
+
+
+def market_table(rows) -> None:
+    """Render a list of (label, price, pct_change) tuples as a dense table
+    with hairline dividers between rows — used for Global Markets, Major
+    Assets, and Market Movers so each is one scannable table, not several
+    separate cards."""
+    for i, (label, price, pct_change) in enumerate(rows):
+        market_row(label, price, pct_change)
+        if i < len(rows) - 1:
+            render_html(f'<hr style="margin:6px 0; border-color:{BORDER};">')
+
+
+def sample_tag(text: str = "Sample data") -> str:
+    """Inline HTML for a small, honest 'this is illustrative' marker —
+    embeddable next to a section header. Never let placeholder content pass
+    as live data without this."""
+    return (
+        f'<span style="display:inline-block; padding:2px 9px; border-radius:{RADIUS_SM}; '
+        f'border:1px solid {BORDER}; color:{INK_MUTED}; font-size:0.65rem; font-weight:700; '
+        f'text-transform:uppercase; letter-spacing:0.05em; white-space:nowrap;">{text}</span>'
     )
 
 

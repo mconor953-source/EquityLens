@@ -9,7 +9,7 @@ metals, and indices don't have income statements or a P/E ratio.
 import streamlit as st
 import plotly.graph_objects as go
 
-from theme import apply_theme, UP_COLOR, DOWN_COLOR
+from theme import apply_theme, UP_COLOR, DOWN_COLOR, INK_PRIMARY, INK_SECONDARY, BORDER
 from components import asset_picker, compact_placeholder, render_html, rating_badge_html
 from data_fetcher import (
     get_price_history,
@@ -91,7 +91,7 @@ fig.update_layout(
     plot_bgcolor="white",
     paper_bgcolor="white",
     xaxis=dict(showgrid=False, rangeslider=dict(visible=False)),
-    yaxis=dict(showgrid=True, gridcolor="#EDEFF2", tickprefix="$"),
+    yaxis=dict(showgrid=True, gridcolor=BORDER, tickprefix="$"),
     hovermode="x unified",
 )
 st.plotly_chart(fig, use_container_width=True)
@@ -167,10 +167,10 @@ if asset_class == "Stocks":
             render_html(
                 f"""
                 <div style="text-align:center; padding: 8px 0 16px 0;">
-                    <div style="font-size:3rem; font-weight:800; line-height:1; color:#0B1F33;">
+                    <div style="font-size:2.75rem; font-weight:800; line-height:1; color:{INK_PRIMARY}; font-variant-numeric:tabular-nums;">
                         {health['total_score']}
                     </div>
-                    <div style="font-size:0.85rem; color:#5B6B82; margin-top:4px;">out of 100</div>
+                    <div style="font-size:0.82rem; color:{INK_SECONDARY}; margin-top:4px;">out of 100</div>
                     <div style="margin-top:10px;">{rating_badge_html(health['rating'])}</div>
                 </div>
                 """
