@@ -49,6 +49,16 @@ RATING_COLORS = {
     "Weak": "#B3261E",
 }
 
+# Technical Rating (Market Research) — same muted institutional palette,
+# on a five-step Strong Sell -> Strong Buy scale rather than Weak -> Excellent.
+TECHNICAL_RATING_COLORS = {
+    "Strong Buy": "#1D7A4C",
+    "Buy": "#5B8A6E",
+    "Neutral": "#52525B",
+    "Sell": "#C17A6B",
+    "Strong Sell": "#B3261E",
+}
+
 FONT_IMPORT = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

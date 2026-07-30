@@ -8,7 +8,7 @@ import textwrap
 
 import streamlit as st
 
-from theme import RATING_COLORS, UP_COLOR, DOWN_COLOR, INK_SECONDARY, INK_PRIMARY, INK_MUTED, BORDER, CARD_BG, RADIUS_SM
+from theme import RATING_COLORS, UP_COLOR, DOWN_COLOR, INK_SECONDARY, INK_PRIMARY, INK_MUTED, BORDER, RADIUS_SM
 from assets import PREDEFINED_ASSETS
 from data_fetcher import format_market_price
 
@@ -28,40 +28,11 @@ def render_html(html: str) -> None:
     st.markdown(textwrap.dedent(html).strip(), unsafe_allow_html=True)
 
 
-def section_header(title: str, subtitle: str = None, tag: str = None) -> None:
-    """A section title, optionally paired with a small tag (e.g. 'Sample
-    data') aligned to its right — used so illustrative content is always
-    labeled honestly right where it's introduced."""
-    if tag:
-        header_col, tag_col = st.columns([5, 1.6])
-        with header_col:
-            st.markdown(f"#### {title}")
-        with tag_col:
-            st.write("")
-            render_html(sample_tag(tag))
-    else:
-        st.markdown(f"#### {title}")
+def section_header(title: str, subtitle: str = None) -> None:
+    """A section title with an optional caption beneath it."""
+    st.markdown(f"#### {title}")
     if subtitle:
         st.caption(subtitle)
-
-
-def compact_placeholder(label: str, tag: str = "Planned feature") -> None:
-    """A single-line, low-visual-weight marker for a not-yet-built feature.
-
-    Deliberately small — a label plus a muted tag, not a large empty panel —
-    so a page with several planned features doesn't read as unfinished.
-    """
-    render_html(
-        f"""
-        <div style="display:flex; justify-content:space-between; align-items:center;
-                    background-color:{CARD_BG}; border:1px solid {BORDER}; border-radius:{RADIUS_SM};
-                    padding:10px 14px; margin-bottom:8px;">
-            <span style="font-weight:600; color:{INK_PRIMARY}; font-size:0.87rem;">{label}</span>
-            <span style="color:{INK_MUTED}; font-size:0.7rem; font-weight:700;
-                        text-transform:uppercase; letter-spacing:0.04em;">{tag}</span>
-        </div>
-        """
-    )
 
 
 def rating_badge_html(rating: str) -> str:
@@ -117,24 +88,53 @@ def market_table(rows) -> None:
             render_html(f'<hr style="margin:6px 0; border-color:{BORDER};">')
 
 
-def sample_tag(text: str = "Sample data") -> str:
-    """Inline HTML for a small, honest 'this is illustrative' marker —
-    embeddable next to a section header. Never let placeholder content pass
-    as live data without this."""
+def signal_tag_html(signal: str) -> str:
+    """Small colored tag for a Buy/Sell/Neutral technical signal — a lighter,
+    denser variant of rating_badge_html sized for inline use in a signal
+    list rather than as a standalone headline badge."""
+    colors = {"Buy": UP_COLOR, "Sell": DOWN_COLOR, "Neutral": INK_MUTED}
+    color = colors.get(signal, INK_SECONDARY)
     return (
-        f'<span style="display:inline-block; padding:2px 9px; border-radius:{RADIUS_SM}; '
-        f'border:1px solid {BORDER}; color:{INK_MUTED}; font-size:0.65rem; font-weight:700; '
-        f'text-transform:uppercase; letter-spacing:0.05em; white-space:nowrap;">{text}</span>'
+        f'<span style="display:inline-block; padding:2px 8px; border-radius:{RADIUS_SM}; '
+        f'background-color:{color}1A; color:{color}; font-size:0.7rem; font-weight:700; '
+        f'text-transform:uppercase; letter-spacing:0.03em; white-space:nowrap;">{signal}</span>'
     )
 
 
-def asset_picker(key_prefix: str, default_class: str = "Stocks"):
+def signal_row(name: str, detail: str, signal: str) -> None:
+    """One row of a Technical Rating signal breakdown: indicator name |
+    plain-English detail | colored Buy/Sell/Neutral tag."""
+    name_col, detail_col, tag_col = st.columns([1.3, 2.7, 1])
+    name_col.markdown(f"**{name}**")
+    with detail_col:
+        render_html(f'<span style="color:{INK_SECONDARY}; font-size:0.85rem;">{detail}</span>')
+    with tag_col:
+        render_html(signal_tag_html(signal))
+
+
+def signal_list(signals) -> None:
+    """Render a list of {name, detail, signal} dicts (as produced by
+    technicals.compute_technical_rating) as dense rows with hairline
+    dividers — the Technical Analysis equivalent of market_table."""
+    for i, sig in enumerate(signals):
+        signal_row(sig["name"], sig["detail"], sig["signal"])
+        if i < len(signals) - 1:
+            render_html(f'<hr style="margin:6px 0; border-color:{BORDER};">')
+
+
+def asset_picker(key_prefix: str, default_class: str = "Stocks", default_asset: str = None):
     """Shared asset-class + asset + custom-ticker selector.
 
     Used by both Market Research and Trade Studio so ticker selection looks
     and behaves identically everywhere. Returns (ticker, display_name,
     asset_class); ticker is None/empty if the user hasn't typed a custom
     ticker yet.
+
+    `default_class`/`default_asset` (from Settings, see settings_store.py)
+    only seed the *initial* widget value — like any Streamlit widget, once
+    the user has picked something in this session that choice sticks, even
+    if Settings changes afterward. They take effect the next time the page
+    is opened fresh.
     """
     classes = list(PREDEFINED_ASSETS.keys())
     default_index = classes.index(default_class) if default_class in classes else 0
@@ -146,7 +146,8 @@ def asset_picker(key_prefix: str, default_class: str = "Stocks"):
         )
     with asset_col:
         options = list(PREDEFINED_ASSETS[asset_class].keys()) + [CUSTOM_OPTION]
-        selected_asset = st.selectbox("Asset", options, key=f"{key_prefix}_asset")
+        asset_index = options.index(default_asset) if default_asset in options else 0
+        selected_asset = st.selectbox("Asset", options, index=asset_index, key=f"{key_prefix}_asset")
 
     if selected_asset == CUSTOM_OPTION:
         ticker = st.text_input(

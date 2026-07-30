@@ -1,69 +1,130 @@
-"""Sample/illustrative content for the Dashboard's editorial sections.
+"""Deterministic Dashboard intelligence, derived from the same live price
+snapshots as Global Markets / Major Assets / Market Movers — no AI/LLM, no
+news feed, no economic calendar API. Every sentence and figure here is a
+plain-English rendering of a real number (breadth, RSI, 52-week range),
+computed the same way scoring.py and technicals.py compute everything else
+in this app: fixed rules over real data, nothing generated or guessed.
 
-Everything in this file is placeholder content — there is no news feed,
-economic calendar API, or AI model behind it yet. It exists so the Dashboard
-can demonstrate its intended layout and information hierarchy today, and so
-a future AI/news/calendar integration has an obvious, single place to plug
-in: replace the functions below with real data sources and nothing in
-views/dashboard.py needs to change, since it only consumes this shape.
-
-Every section built from this data is labeled "Sample data" in the UI —
-never presented as live analysis.
+Pure functions only, operating on a pre-fetched list of asset snapshots
+(see views/dashboard.py) — no network calls in this module, same "no I/O
+here" separation as scoring.py and trade_calculator.py.
 """
 
+RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 30
+NEAR_EXTREME_PCT = 0.03  # within 3% of the trailing 52-week high/low
 
-def get_market_brief() -> dict:
-    """A sample morning market brief, structured the way a real one would be:
-    a headline, a short narrative (what happened / why / macro context), and
-    a set of scannable watch items (central bank, earnings, data)."""
-    return {
-        "headline": "Markets consolidate near recent highs as investors weigh the rate outlook",
-        "summary": [
-            "Global equities traded in a narrow range, with major indices holding close to "
-            "recent highs as investors digested a mixed batch of economic data. Technology "
-            "shares outperformed, while defensive sectors lagged the broader market.",
-            "Treasury yields firmed after data reinforced expectations that the Federal Reserve "
-            "will hold rates steady at its next meeting. The dollar strengthened against most "
-            "major currencies, weighing on gold and other dollar-denominated assets.",
-            "In commodities, oil eased on demand concerns, while Bitcoin remained range-bound "
-            "as investors await clearer macro catalysts.",
-        ],
-        "watch_items": [
-            {
-                "label": "Central Bank Watch",
-                "detail": "A Federal Reserve rate decision is due this week — markets are "
-                "pricing in a high probability of no change.",
-            },
-            {
-                "label": "Earnings Focus",
-                "detail": "Several large-cap technology names report this week, with "
-                "AI-related capital expenditure guidance in focus.",
-            },
-            {
-                "label": "Data Watch",
-                "detail": "The US jobs report and ISM manufacturing data, both due later "
-                "this week, could shift rate-cut expectations.",
-            },
-        ],
-    }
+# Average absolute move across tracked assets -> a plain-English activity
+# read, ordered best (most active) to worst (quietest) like scoring.py's bands.
+ACTIVITY_BANDS = (
+    (1.5, "unusually active, higher-volatility trading"),
+    (0.5, "typical daily trading activity"),
+    (0.0, "quiet, low-volatility trading"),
+)
+
+# Breadth ratio (advancing vs. declining) -> headline word.
+BREADTH_RATIO = 1.5
 
 
-def get_todays_watchlist() -> list:
-    """Sample list of assets/events approaching a notable technical or macro
-    trigger — the kind of thing a trader would want flagged at a glance."""
-    return [
-        {"asset": "Gold", "note": "Approaching key resistance near recent highs"},
-        {"asset": "GBP/JPY", "note": "Testing an important support zone"},
-        {"asset": "NVIDIA", "note": "Earnings due later this week"},
-        {"asset": "Federal Reserve", "note": "Policy meeting scheduled this week"},
+def _activity_phrase(avg_abs_change: float) -> str:
+    for minimum, phrase in ACTIVITY_BANDS:
+        if avg_abs_change >= minimum:
+            return phrase
+    return ACTIVITY_BANDS[-1][1]
+
+
+def get_market_pulse(snapshots: list) -> dict:
+    """A rule-based market snapshot: breadth (advancing vs. declining),
+    the largest mover, and an activity read from the average move size —
+    one real sentence built from real numbers, not a generated narrative.
+
+    Returns the same {headline, summary, watch_items} shape the Dashboard
+    has always rendered, so the view code barely changes even though the
+    content source did.
+    """
+    moved = [s for s in snapshots if s.get("pct_change") is not None]
+    if not moved:
+        return {
+            "headline": "Market data is temporarily unavailable.",
+            "summary": ["Live prices for tracked assets could not be retrieved. Try refreshing in a moment."],
+            "watch_items": [],
+        }
+
+    advancing = [s for s in moved if s["pct_change"] > 0]
+    declining = [s for s in moved if s["pct_change"] < 0]
+    total = len(moved)
+
+    if len(advancing) >= len(declining) * BREADTH_RATIO:
+        breadth_word = "broadly higher"
+    elif len(declining) >= len(advancing) * BREADTH_RATIO:
+        breadth_word = "broadly lower"
+    else:
+        breadth_word = "mixed"
+
+    headline = f"Markets are {breadth_word} today across the assets EquityLens tracks."
+
+    biggest_gainer = max(moved, key=lambda s: s["pct_change"])
+    biggest_decliner = min(moved, key=lambda s: s["pct_change"])
+    avg_abs_change = sum(abs(s["pct_change"]) for s in moved) / total
+    activity_phrase = _activity_phrase(avg_abs_change)
+
+    summary = [
+        f"{len(advancing)} of {total} tracked assets are advancing and {len(declining)} are declining, "
+        f"consistent with {activity_phrase} (average move of {avg_abs_change:.2f}%).",
+        f"{biggest_gainer['label']} leads gainers at {biggest_gainer['pct_change']:+.2f}%, while "
+        f"{biggest_decliner['label']} is the weakest at {biggest_decliner['pct_change']:+.2f}%.",
     ]
 
-
-def get_economic_calendar() -> list:
-    """Sample upcoming high-impact macro events."""
-    return [
-        {"event": "Federal Reserve Interest Rate Decision", "when": "This week", "impact": "High"},
-        {"event": "US Non-Farm Payrolls", "when": "Friday", "impact": "High"},
-        {"event": "Eurozone Flash CPI", "when": "This week", "impact": "Medium"},
-        {"event": "ISM Manufacturing PMI", "when": "This week", "impact": "Medium"},
+    watch_items = [
+        {"label": "Biggest Gainer", "detail": f"{biggest_gainer['label']} &middot; {biggest_gainer['pct_change']:+.2f}%"},
+        {"label": "Biggest Decliner", "detail": f"{biggest_decliner['label']} &middot; {biggest_decliner['pct_change']:+.2f}%"},
+        {"label": "Breadth", "detail": f"{len(advancing)} advancing &middot; {len(declining)} declining"},
     ]
+
+    return {"headline": headline, "summary": summary, "watch_items": watch_items}
+
+
+def get_notable_signals(snapshots: list) -> list:
+    """Assets currently at a momentum extreme — RSI(14) <=30 (oversold) or
+    >=70 (overbought) — using the same calculation as Market Research's
+    Technical Rating. Real and deterministic; empty when nothing qualifies,
+    never padded with filler."""
+    signals = []
+    for snap in snapshots:
+        rsi = snap.get("rsi")
+        if rsi is None:
+            continue
+        if rsi >= RSI_OVERBOUGHT:
+            signals.append({"asset": snap["label"], "note": f"RSI at {rsi:.1f} — overbought after a strong run."})
+        elif rsi <= RSI_OVERSOLD:
+            signals.append({"asset": snap["label"], "note": f"RSI at {rsi:.1f} — oversold after a sharp pullback."})
+    return signals
+
+
+def get_52_week_extremes(snapshots: list) -> list:
+    """Assets trading within 3% of their trailing 52-week high or low —
+    the same range computation as Market Research's Price Statistics."""
+    extremes = []
+    for snap in snapshots:
+        range_52w = snap.get("range_52w")
+        price = snap.get("price")
+        if not range_52w or price is None:
+            continue
+        high, low = range_52w["high"], range_52w["low"]
+        if high == low:
+            continue
+        if price >= high * (1 - NEAR_EXTREME_PCT):
+            distance = (high - price) / high * 100
+            extremes.append({
+                "asset": snap["label"],
+                "note": f"Within {distance:.1f}% of its 52-week high.",
+                "flag": "Near High",
+            })
+        elif price <= low * (1 + NEAR_EXTREME_PCT):
+            distance = (price - low) / low * 100
+            extremes.append({
+                "asset": snap["label"],
+                "note": f"Within {distance:.1f}% of its 52-week low.",
+                "flag": "Near Low",
+            })
+    return extremes

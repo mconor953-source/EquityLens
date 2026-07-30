@@ -54,9 +54,15 @@ def plan_trade(
     if risk_per_unit == 0:
         warnings.append("Entry and Stop Loss cannot be equal — risk per unit is zero.")
 
+    if account_size <= 0:
+        warnings.append("Account size must be greater than zero to size a position.")
+    if risk_pct <= 0:
+        warnings.append("Risk percentage must be greater than zero to size a position.")
+
     risk_reward_ratio = (reward_per_unit / risk_per_unit) if risk_per_unit else None
     risk_amount = account_size * (risk_pct / 100)
-    position_size = (risk_amount / risk_per_unit) if risk_per_unit else None
+    can_size_position = bool(risk_per_unit) and risk_amount > 0
+    position_size = (risk_amount / risk_per_unit) if can_size_position else None
     position_value = (position_size * entry) if position_size is not None else None
     potential_profit = (position_size * reward_per_unit) if position_size is not None else None
 

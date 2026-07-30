@@ -1,28 +1,46 @@
 """EquityLens — Market Research: multi-asset price research + equity fundamentals.
 
-Every asset class gets price/change + an interactive candlestick chart.
-Company fundamentals and the Financial Health Score only apply to equities,
+Every asset class gets price/change, price statistics, an interactive
+candlestick chart with moving averages and volume, and a rule-based
+Technical Rating — all computed from price history alone, so it works the
+same for stocks, crypto, forex, metals, and indices. Company fundamentals,
+Analyst Consensus, and the Financial Health Score only apply to equities,
 so that section is shown for the Stocks asset class only — crypto, forex,
-metals, and indices don't have income statements or a P/E ratio.
+metals, and indices don't have income statements, analyst coverage, or a
+P/E ratio.
 """
 
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-from theme import apply_theme, UP_COLOR, DOWN_COLOR, INK_PRIMARY, INK_SECONDARY, BORDER
-from components import asset_picker, compact_placeholder, render_html, rating_badge_html
+from theme import (
+    apply_theme, UP_COLOR, DOWN_COLOR, INK_PRIMARY, INK_SECONDARY, INK_MUTED, BORDER,
+    TECHNICAL_RATING_COLORS,
+)
+from components import asset_picker, render_html, rating_badge_html, signal_list
 from data_fetcher import (
     get_price_history,
     get_ticker_info,
     is_valid_ticker,
     get_extended_metrics,
+    get_analyst_consensus,
     format_large_number,
     format_ratio,
     format_price,
+    format_market_price,
     format_percentage,
     format_multiple,
 )
 from scoring import calculate_financial_health
+from settings_store import load_settings
+from technicals import (
+    simple_moving_average,
+    annualized_volatility,
+    fifty_two_week_range,
+    volume_ratio,
+    compute_technical_rating,
+)
 
 st.set_page_config(page_title="EquityLens — Market Research", layout="wide")
 apply_theme()
@@ -30,15 +48,23 @@ apply_theme()
 st.markdown("## Market Research")
 st.caption("What you need to know about this asset in the next 30 seconds.")
 
-ticker, display_name, asset_class = asset_picker("market_research")
+settings = load_settings()
+ticker, display_name, asset_class = asset_picker(
+    "market_research",
+    default_class=settings.get("default_asset_class", "Stocks"),
+    default_asset=settings.get("default_asset"),
+)
 
 if not ticker:
     st.info("Enter a ticker symbol to continue.")
     st.stop()
 
 PERIOD_LABELS = {"1M": "1mo", "3M": "3mo", "6M": "6mo", "1Y": "1y", "5Y": "5y"}
+period_keys = list(PERIOD_LABELS.keys())
+saved_period_label = settings.get("default_period_label", "1Y")
+default_period_index = period_keys.index(saved_period_label) if saved_period_label in period_keys else 3
 selected_period_label = st.radio(
-    "Period", list(PERIOD_LABELS.keys()), index=3, horizontal=True, label_visibility="collapsed"
+    "Period", period_keys, index=default_period_index, horizontal=True, label_visibility="collapsed"
 )
 period = PERIOD_LABELS[selected_period_label]
 
@@ -56,6 +82,21 @@ if history is None or history.empty or "Close" not in history.columns:
     )
     st.stop()
 
+# Indicators (moving averages, RSI, 52-week range, ...) need at least a
+# year of history to be meaningful regardless of what chart period is
+# selected. Reuse `history` directly when it already covers >= 1y; only
+# fetch again for the shorter chart periods (1M/3M/6M).
+if period in ("1mo", "3mo", "6mo"):
+    with st.spinner(f"Loading indicators for {ticker}..."):
+        try:
+            indicator_history = get_price_history(ticker, period="1y")
+        except Exception:
+            indicator_history = history
+    if indicator_history is None or indicator_history.empty:
+        indicator_history = history
+else:
+    indicator_history = history
+
 current_price = history["Close"].iloc[-1]
 previous_close = history["Close"].iloc[-2] if len(history) > 1 else None
 pct_change = ((current_price - previous_close) / previous_close * 100) if previous_close else None
@@ -68,33 +109,167 @@ price_col, change_col = st.columns(2)
 price_col.metric("Current Price", f"${current_price:,.4f}" if current_price < 10 else f"${current_price:,.2f}")
 change_col.metric("Change (1D)", f"{pct_change:+.2f}%" if pct_change is not None else "N/A")
 
+# ---------- Price Statistics (every asset class — price-derived only) ----------
+st.write("")
+st.markdown("#### Price Statistics")
+st.caption(
+    "Computed on a trailing 1-year (or longer) price history, independent of the "
+    "chart period selected above — so these figures don't change when you switch to 1M or 3M."
+)
+
+range_52w = fifty_two_week_range(indicator_history)
+volatility = annualized_volatility(indicator_history["Close"])
+vol_ratio = volume_ratio(indicator_history)
+
+stat1, stat2, stat3, stat4 = st.columns(4)
+stat1.metric("52-Week High", format_market_price(range_52w["high"]) if range_52w else "N/A")
+stat2.metric("52-Week Low", format_market_price(range_52w["low"]) if range_52w else "N/A")
+stat3.metric(
+    "Annualized Volatility",
+    format_percentage(volatility) if volatility is not None else "N/A",
+    help="Standard deviation of daily returns, annualized over 252 trading days.",
+)
+stat4.metric(
+    "Volume (vs. 20D Avg)",
+    format_multiple(vol_ratio["ratio"]) if vol_ratio else "N/A",
+    help="Latest session volume divided by its trailing 20-day average.",
+)
+
+if range_52w and range_52w["high"] != range_52w["low"]:
+    position_pct = max(0.0, min(100.0, (current_price - range_52w["low"]) / (range_52w["high"] - range_52w["low"]) * 100))
+    render_html(
+        f"""
+        <div style="margin-top:4px; margin-bottom:8px;">
+            <div style="position:relative; height:6px; background-color:{BORDER}; border-radius:3px;">
+                <div style="position:absolute; left:{position_pct:.1f}%; top:-3px; width:2px; height:12px;
+                            background-color:{INK_PRIMARY}; border-radius:1px; transform:translateX(-1px);"></div>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-top:4px; font-size:0.72rem; color:{INK_MUTED};">
+                <span>{format_market_price(range_52w['low'])}</span>
+                <span>52-week range — current price at the {position_pct:.0f}th percentile</span>
+                <span>{format_market_price(range_52w['high'])}</span>
+            </div>
+        </div>
+        """
+    )
+
 st.write("")
 st.markdown("#### Price Chart")
 
-fig = go.Figure(
-    data=[
-        go.Candlestick(
-            x=history.index,
-            open=history["Open"],
-            high=history["High"],
-            low=history["Low"],
-            close=history["Close"],
-            increasing_line_color=UP_COLOR,
-            decreasing_line_color=DOWN_COLOR,
-            name=ticker,
-        )
-    ]
+sma50_series = simple_moving_average(indicator_history["Close"], 50)
+sma200_series = simple_moving_average(indicator_history["Close"], 200)
+has_volume = "Volume" in history.columns and history["Volume"].fillna(0).sum() > 0
+
+fig = make_subplots(
+    rows=2 if has_volume else 1,
+    cols=1,
+    shared_xaxes=True,
+    row_heights=[0.72, 0.28] if has_volume else [1.0],
+    vertical_spacing=0.03,
 )
+
+fig.add_trace(
+    go.Candlestick(
+        x=history.index,
+        open=history["Open"],
+        high=history["High"],
+        low=history["Low"],
+        close=history["Close"],
+        increasing_line_color=UP_COLOR,
+        decreasing_line_color=DOWN_COLOR,
+        name=ticker,
+    ),
+    row=1, col=1,
+)
+
+if sma50_series is not None:
+    sma50_plot = sma50_series.reindex(history.index).dropna()
+    if not sma50_plot.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=sma50_plot.index, y=sma50_plot.values, mode="lines", name="SMA 50",
+                line=dict(color=INK_SECONDARY, width=1.3),
+            ),
+            row=1, col=1,
+        )
+
+if sma200_series is not None:
+    sma200_plot = sma200_series.reindex(history.index).dropna()
+    if not sma200_plot.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=sma200_plot.index, y=sma200_plot.values, mode="lines", name="SMA 200",
+                line=dict(color=INK_MUTED, width=1.3, dash="dot"),
+            ),
+            row=1, col=1,
+        )
+
+if has_volume:
+    volume_colors = [
+        UP_COLOR if c >= o else DOWN_COLOR
+        for o, c in zip(history["Open"], history["Close"])
+    ]
+    fig.add_trace(
+        go.Bar(x=history.index, y=history["Volume"], marker_color=volume_colors, name="Volume", opacity=0.55),
+        row=2, col=1,
+    )
+
 fig.update_layout(
-    height=440,
+    height=520 if has_volume else 440,
     margin=dict(l=10, r=10, t=10, b=10),
     plot_bgcolor="white",
     paper_bgcolor="white",
-    xaxis=dict(showgrid=False, rangeslider=dict(visible=False)),
-    yaxis=dict(showgrid=True, gridcolor=BORDER, tickprefix="$"),
     hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
 )
+fig.update_xaxes(showgrid=False, rangeslider_visible=False, row=1, col=1)
+fig.update_yaxes(showgrid=True, gridcolor=BORDER, tickprefix="$", row=1, col=1)
+if has_volume:
+    fig.update_xaxes(showgrid=False, row=2, col=1)
+    fig.update_yaxes(showgrid=False, row=2, col=1)
+
 st.plotly_chart(fig, use_container_width=True)
+
+# ---------- Technical Analysis (every asset class — price-derived only) ----------
+st.write("")
+st.markdown("#### Technical Analysis")
+
+technical = compute_technical_rating(indicator_history)
+
+if technical is None:
+    st.info("Not enough price history to compute technical signals for this ticker.")
+else:
+    rating_col, counts_col = st.columns([1, 3])
+    with rating_col:
+        rating_color = TECHNICAL_RATING_COLORS.get(technical["rating"], INK_SECONDARY)
+        render_html(
+            f"""
+            <div style="text-align:center; padding: 8px 0 16px 0;">
+                <div style="font-size:1.55rem; font-weight:800; color:{rating_color}; line-height:1.2;">
+                    {technical['rating']}
+                </div>
+                <div style="font-size:0.78rem; color:{INK_SECONDARY}; margin-top:8px;">
+                    {technical['total_signals']} signals evaluated
+                </div>
+            </div>
+            """
+        )
+    with counts_col:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Buy Signals", technical["buy_count"])
+        c2.metric("Neutral Signals", technical["neutral_count"])
+        c3.metric("Sell Signals", technical["sell_count"])
+
+    st.write("")
+    st.markdown("###### Signal Breakdown")
+    signal_list(technical["signals"])
+
+    st.caption(
+        "Technical Rating counts Buy/Sell/Neutral signals across four moving averages "
+        "(20/50/100/200-day) plus the 50/200-day cross, and three momentum oscillators "
+        "(RSI-14, MACD, 10-day Rate of Change) — a rule-based signal count, not a "
+        "prediction. Not investment advice."
+    )
 
 st.write("")
 
@@ -158,6 +333,30 @@ if asset_class == "Stocks":
 
         st.write("")
 
+        # ---------- Analyst Consensus ----------
+        st.markdown("#### Analyst Consensus")
+        consensus = get_analyst_consensus(info)
+
+        if consensus["num_analysts"] and consensus["target_mean"]:
+            upside = (consensus["target_mean"] - current_price) / current_price * 100
+            ac1, ac2, ac3, ac4 = st.columns(4)
+            ac1.metric("Recommendation", consensus["recommendation"] or "N/A")
+            ac2.metric("Analysts Covering", consensus["num_analysts"])
+            ac3.metric("Mean Price Target", format_price(consensus["target_mean"]))
+            ac4.metric(
+                "Implied Upside",
+                f"{upside:+.1f}%",
+                help="Mean analyst price target vs. the current price.",
+            )
+            st.caption(
+                f"Analyst target range: {format_price(consensus['target_low'])} – {format_price(consensus['target_high'])}. "
+                "Source: Yahoo Finance sell-side consensus."
+            )
+        else:
+            st.info(f"No analyst coverage data available for '{ticker}'.")
+
+        st.write("")
+
         # ---------- Financial Health Score ----------
         st.markdown("#### Financial Health Score")
         health = calculate_financial_health(info, metrics)
@@ -207,10 +406,4 @@ else:
     st.info(f"Company fundamentals are available for the Stocks asset class only — '{asset_class}' assets don't have an income statement or P/E ratio.")
 
 st.write("")
-st.markdown("#### Planned Intelligence Features")
-compact_placeholder("AI Company Brief")
-compact_placeholder("AI Financial Summary")
-compact_placeholder("Technical Summary")
-compact_placeholder("Overall Rating")
-
 st.caption("Data source: Yahoo Finance via yfinance. For research purposes only — not investment advice.")

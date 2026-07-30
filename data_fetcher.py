@@ -114,6 +114,30 @@ def format_multiple(value) -> str:
     return f"{value:.2f}x"
 
 
+RECOMMENDATION_LABELS = {
+    "strong_buy": "Strong Buy",
+    "buy": "Buy",
+    "hold": "Hold",
+    "underperform": "Underperform",
+    "sell": "Sell",
+}
+
+
+def get_analyst_consensus(info: dict) -> dict:
+    """Extract Wall Street analyst coverage from the yfinance info dict —
+    real sell-side data (recommendation, price targets, analyst count), not
+    computed here. Returns raw values (None if uncovered); formatting is
+    handled by the view."""
+    key = (info.get("recommendationKey") or "").lower()
+    return {
+        "recommendation": RECOMMENDATION_LABELS.get(key, key.replace("_", " ").title() if key else None),
+        "num_analysts": info.get("numberOfAnalystOpinions"),
+        "target_mean": info.get("targetMeanPrice"),
+        "target_high": info.get("targetHighPrice"),
+        "target_low": info.get("targetLowPrice"),
+    }
+
+
 def get_extended_metrics(info: dict) -> dict:
     """Extract growth, profitability, financial position, and valuation figures
     from the yfinance info dict. Returns raw numeric values (None if unavailable);
