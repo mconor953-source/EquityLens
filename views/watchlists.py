@@ -1,28 +1,41 @@
-"""EquityLens — Watchlists: two persistent, workspace-style ticker lists."""
+"""EquityLens — Watchlists: two persistent, workspace-style ticker lists.
+
+Long-Term Investing shows idea_engine.py's automated stance/conviction read
+for each holding — reference research, not a decision — so a glance at the
+list tells you which names currently look attractive, neutral, or weak.
+Momentum Watchlist keeps the existing rule-based Technical Rating, Market
+Structure read, and Event Risk flag for shorter-lookback monitoring. Either
+tab can hand a ticker off to the user's own Investment Ideas register via
+the "Create Idea" action, which prefills the asset only — never the stance
+or conviction.
+"""
+
+from datetime import datetime
 
 import streamlit as st
 
-from theme import apply_theme, INK_SECONDARY, INK_MUTED, BORDER, TECHNICAL_RATING_COLORS
-from components import price_change_html, rating_badge_html, render_html
+from theme import apply_theme, INK_SECONDARY, INK_MUTED, TECHNICAL_RATING_COLORS, STRUCTURE_COLORS, IMPACT_COLORS
+from components import price_change_html, stance_badge_html, page_header, data_table
 from data_fetcher import (
     get_current_price_and_change,
     get_ticker_info,
-    get_extended_metrics,
     get_price_history,
     is_valid_ticker,
     format_market_price,
+    classify_asset_class,
 )
-from scoring import calculate_financial_health
+from idea_engine import build_investment_idea
 from technicals import compute_technical_rating
+from structure_engine import build_market_structure
+from news_calendar import get_relevant_events
 from watchlist_store import load_watchlists, add_ticker, remove_ticker
 
-st.set_page_config(page_title="EquityLens — Watchlists", layout="wide")
-apply_theme()
 
-st.markdown("## Watchlists")
-st.caption("Two persistent, purpose-built lists — not just a table of tickers.")
-
-watchlists = load_watchlists()
+def _create_idea_from_ticker(ticker: str, asset_class_label: str) -> None:
+    """Hand off to Investment Ideas with the asset/ticker/class prefilled —
+    the BUY/HOLD/SELL decision, conviction, and thesis stay manual."""
+    st.session_state["idea_prefill"] = {"ticker": ticker, "asset_class": asset_class_label}
+    st.switch_page("views/investment_ideas.py")
 
 
 def add_remove_row(watchlist_name: str) -> None:
@@ -35,7 +48,7 @@ def add_remove_row(watchlist_name: str) -> None:
         "Add ticker", placeholder="e.g. AAPL, BTC-USD, EURUSD=X, GC=F, ^GSPC",
         key=input_key, label_visibility="collapsed",
     )
-    if button_col.button("Add", key=f"add_button_{watchlist_name}", use_container_width=True):
+    if button_col.button("Add", key=f"add_button_{watchlist_name}", use_container_width=True, type="primary"):
         candidate = new_ticker.strip().upper()
         if not candidate:
             st.warning("Enter a ticker symbol first.")
@@ -53,88 +66,130 @@ def add_remove_row(watchlist_name: str) -> None:
                 st.rerun()
 
 
-long_term_tab, swing_tab = st.tabs(["Long-Term Investing", "Swing Trade Watchlist"])
+def manage_row(watchlist_name: str, tickers: list) -> None:
+    """A compact 'act on one ticker' row below the read-only table — the
+    table itself (components.data_table) is plain styled HTML with no
+    interactive cells, so Create Idea / Remove live here instead of as
+    per-row buttons."""
+    if not tickers:
+        return
+    m1, m2, m3 = st.columns([2, 1, 1])
+    chosen = m1.selectbox("Manage a ticker", tickers, key=f"manage_select_{watchlist_name}", label_visibility="collapsed")
+    if m2.button("Create Idea", key=f"manage_idea_{watchlist_name}", use_container_width=True):
+        asset_class_label = classify_asset_class(get_ticker_info(chosen))
+        _create_idea_from_ticker(chosen, asset_class_label)
+    if m3.button("Remove", key=f"manage_remove_{watchlist_name}", use_container_width=True):
+        remove_ticker(watchlist_name, chosen)
+        st.rerun()
+
+
+st.set_page_config(page_title="EquityLens — Watchlists", layout="wide")
+apply_theme()
+
+page_header("Watchlists", subtitle="Two persistent, purpose-built lists for ongoing monitoring.")
+
+watchlists = load_watchlists()
+last_updated = datetime.now().strftime("%H:%M:%S")
+
+long_term_tab, momentum_tab = st.tabs(["Long-Term Investing", "Momentum Watchlist"])
 
 # ---------- Long-Term Investing ----------
 with long_term_tab:
-    st.caption("Live price, change, and Financial Health Score for each holding.")
+    st.caption(
+        "Live price and EquityLens's automated research read (stance, conviction) for each holding — "
+        "reference only, not your decision. Fundamentals are used where the ticker is an equity; "
+        "otherwise the view is price trend and momentum only."
+    )
     add_remove_row("Long-Term Investing")
     st.write("")
 
     tickers = watchlists.get("Long-Term Investing", [])
     if not tickers:
         st.info("No tickers yet — add one above.")
-    for ticker in tickers:
-        price, pct_change = get_current_price_and_change(ticker)
-        info = get_ticker_info(ticker)
+    else:
+        rows = []
+        for ticker in tickers:
+            price, pct_change = get_current_price_and_change(ticker)
+            try:
+                history = get_price_history(ticker, period="1y")
+            except Exception:
+                history = None
 
-        score_html = f'<span style="color:{INK_SECONDARY};">N/A</span>'
-        if is_valid_ticker(info):
-            metrics = get_extended_metrics(info)
-            health = calculate_financial_health(info, metrics)
-            score_html = f"{health['total_score']}/100 &nbsp;{rating_badge_html(health['rating'])}"
+            raw_info = get_ticker_info(ticker)
+            asset_class_label = classify_asset_class(raw_info)
+            info = raw_info if (is_valid_ticker(raw_info) and raw_info.get("quoteType") == "EQUITY") else None
 
-        row_col1, row_col2, row_col3, row_col4, row_col5 = st.columns([1.2, 1.3, 1.3, 2, 0.8])
-        row_col1.markdown(f"**{ticker}**")
-        row_col2.markdown(format_market_price(price))
-        row_col3.markdown(price_change_html(pct_change), unsafe_allow_html=True)
-        row_col4.markdown(score_html, unsafe_allow_html=True)
-        if row_col5.button("Remove", key=f"remove_Long-Term Investing_{ticker}"):
-            remove_ticker("Long-Term Investing", ticker)
-            st.rerun()
-        st.markdown(f'<hr style="margin:4px 0; border-color:{BORDER};">', unsafe_allow_html=True)
+            idea = build_investment_idea(ticker, ticker, asset_class_label, price, history, info) if history is not None else None
 
-# ---------- Swing Trade Watchlist ----------
-with swing_tab:
+            if idea:
+                stance_cell = stance_badge_html(idea["stance"])
+                conviction_cell = f"{idea['conviction']}/100"
+                trend_cell = idea["trend_label"]
+                key_risk = idea["risks"][0] if idea["risks"] else "No material risk flagged"
+                risk_cell = f'<span title="{key_risk}" style="display:inline-block; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom;">{key_risk}</span>'
+            else:
+                na = f'<span style="color:{INK_MUTED};">N/A</span>'
+                stance_cell = conviction_cell = trend_cell = risk_cell = na
+
+            rows.append([
+                f"<b>{ticker}</b>", format_market_price(price), price_change_html(pct_change),
+                stance_cell, conviction_cell, trend_cell, risk_cell, last_updated,
+            ])
+        data_table(["Asset", "Price", "1D", "Stance", "Conviction", "Trend", "Key Risk", "Updated"], rows, right_align_cols={1})
+        st.write("")
+        manage_row("Long-Term Investing", tickers)
+
+# ---------- Momentum Watchlist ----------
+with momentum_tab:
     st.caption(
-        "Live price and a rule-based Technical Rating for each ticker — the same signal-count "
-        "model used on Market Research."
+        "Live price, rule-based Technical Rating, Market Structure read, and event risk for each ticker — "
+        "the same models used on Market Research and Market Structure."
     )
-    add_remove_row("Swing Trade Watchlist")
+    add_remove_row("Momentum Watchlist")
     st.write("")
 
-    tickers = watchlists.get("Swing Trade Watchlist", [])
+    tickers = watchlists.get("Momentum Watchlist", [])
     if not tickers:
         st.info("No tickers yet — add one above.")
+    else:
+        rows = []
+        for ticker in tickers:
+            price, pct_change = get_current_price_and_change(ticker)
+            try:
+                history = get_price_history(ticker, period="1y")
+            except Exception:
+                history = None
+            technical = compute_technical_rating(history) if history is not None else None
+            asset_class_label = classify_asset_class(get_ticker_info(ticker))
 
-    swing_cols = st.columns(2)
-    for i, ticker in enumerate(tickers):
-        price, pct_change = get_current_price_and_change(ticker)
-        try:
-            history = get_price_history(ticker, period="1y")
-        except Exception:
-            history = None
-        technical = compute_technical_rating(history) if history is not None else None
+            if technical:
+                rating_color = TECHNICAL_RATING_COLORS.get(technical["rating"], INK_SECONDARY)
+                technical_cell = f'<b style="color:{rating_color};">{technical["rating"]}</b>'
+            else:
+                technical_cell = f'<span style="color:{INK_MUTED};">N/A</span>'
 
-        if technical:
-            rating_color = TECHNICAL_RATING_COLORS.get(technical["rating"], INK_SECONDARY)
-            rating_html = (
-                f'<b style="color:{rating_color};">{technical["rating"]}</b>'
-                f'<span style="color:{INK_MUTED};"> &middot; {technical["buy_count"]}B / '
-                f'{technical["neutral_count"]}N / {technical["sell_count"]}S</span>'
-            )
-            rsi_value = technical.get("rsi")
-            rsi_html = f"{rsi_value:.1f}" if rsi_value is not None else "N/A"
-        else:
-            rating_html = f'<span style="color:{INK_MUTED};">Not enough price history</span>'
-            rsi_html = "N/A"
+            try:
+                structure = build_market_structure(ticker)
+            except Exception:
+                structure = None
+            if structure:
+                struct_color = STRUCTURE_COLORS.get(structure["direction"], STRUCTURE_COLORS["neutral"]) if structure["direction"] else STRUCTURE_COLORS["neutral"]
+                structure_cell = f'<b style="color:{struct_color};">{structure["state_label"]}</b>'
+            else:
+                structure_cell = f'<span style="color:{INK_MUTED};">Unavailable</span>'
 
-        with swing_cols[i % 2]:
-            render_html(
-                f"""
-                <div class="el-card">
-                    <div style="display:flex; justify-content:space-between; align-items:baseline;">
-                        <span class="el-card-title">{ticker}</span>
-                        <span style="font-weight:700;">{format_market_price(price)}</span>
-                    </div>
-                    <div style="margin-bottom:10px;">{price_change_html(pct_change)}</div>
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; font-size:0.85rem; color:{INK_SECONDARY};">
-                        <div style="grid-column: 1 / -1;">Technical Rating: {rating_html}</div>
-                        <div>RSI (14): <b>{rsi_html}</b></div>
-                    </div>
-                </div>
-                """
-            )
-            if st.button("Remove", key=f"remove_Swing Trade Watchlist_{ticker}"):
-                remove_ticker("Swing Trade Watchlist", ticker)
-                st.rerun()
+            events = get_relevant_events(ticker, asset_class_label)
+            if not events["available"]:
+                event_cell = f'<span style="color:{INK_MUTED};">N/A</span>'
+            elif events["events"]:
+                event_cell = f'<b style="color:{IMPACT_COLORS["High"]};">HIGH</b>'
+            else:
+                event_cell = f'<span style="color:{INK_MUTED};">Low</span>'
+
+            rows.append([
+                f"<b>{ticker}</b>", format_market_price(price), price_change_html(pct_change),
+                technical_cell, structure_cell, event_cell, last_updated,
+            ])
+        data_table(["Asset", "Price", "1D", "Technical", "Structure", "Event Risk", "Updated"], rows, right_align_cols={1})
+        st.write("")
+        manage_row("Momentum Watchlist", tickers)

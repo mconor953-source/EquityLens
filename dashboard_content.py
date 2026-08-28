@@ -7,7 +7,7 @@ in this app: fixed rules over real data, nothing generated or guessed.
 
 Pure functions only, operating on a pre-fetched list of asset snapshots
 (see views/dashboard.py) — no network calls in this module, same "no I/O
-here" separation as scoring.py and trade_calculator.py.
+here" separation as scoring.py and idea_engine.py.
 """
 
 RSI_OVERBOUGHT = 70
@@ -46,7 +46,11 @@ def get_market_pulse(snapshots: list) -> dict:
     if not moved:
         return {
             "headline": "Market data is temporarily unavailable.",
-            "summary": ["Live prices for tracked assets could not be retrieved. Try refreshing in a moment."],
+            "summary": [
+                "Yahoo Finance didn't return live prices for any tracked asset just now — usually a brief "
+                "rate-limit or connectivity issue on their end, not a problem with your holdings or watchlists. "
+                "Try refreshing in a moment."
+            ],
             "watch_items": [],
         }
 

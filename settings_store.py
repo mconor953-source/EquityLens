@@ -12,7 +12,7 @@ DATA_DIR = Path(__file__).parent / "data"
 STORE_PATH = DATA_DIR / "settings.json"
 
 DEFAULT_SETTINGS = {
-    "default_asset_class": "Stocks",
+    "default_asset_class": "US Stocks",
     "default_asset": "Apple (AAPL)",
     "default_period_label": "1Y",
 }

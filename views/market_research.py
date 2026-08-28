@@ -5,9 +5,9 @@ candlestick chart with moving averages and volume, and a rule-based
 Technical Rating — all computed from price history alone, so it works the
 same for stocks, crypto, forex, metals, and indices. Company fundamentals,
 Analyst Consensus, and the Financial Health Score only apply to equities,
-so that section is shown for the Stocks asset class only — crypto, forex,
-metals, and indices don't have income statements, analyst coverage, or a
-P/E ratio.
+so that section is shown for the US Stocks / UK Stocks asset classes only —
+crypto, forex, commodities, and indices don't have income statements,
+analyst coverage, or a P/E ratio.
 """
 
 import streamlit as st
@@ -16,13 +16,16 @@ from plotly.subplots import make_subplots
 
 from theme import (
     apply_theme, UP_COLOR, DOWN_COLOR, INK_PRIMARY, INK_SECONDARY, INK_MUTED, BORDER,
-    TECHNICAL_RATING_COLORS,
+    TECHNICAL_RATING_COLORS, RATING_COLORS, IMPACT_COLORS, ACCENT_BLUE,
 )
-from components import asset_picker, render_html, rating_badge_html, signal_list
+from components import asset_picker, render_html, rating_badge_html, signal_list, price_change_html, page_header, sentiment_meter_html, status_line_html
+from news_calendar import get_relevant_events, get_company_news, get_earnings_info
+from research_service import event_risk_summary, build_research_summary_sentence
 from data_fetcher import (
     get_price_history,
     get_ticker_info,
     is_valid_ticker,
+    classify_asset_class,
     get_extended_metrics,
     get_analyst_consensus,
     format_large_number,
@@ -45,13 +48,12 @@ from technicals import (
 st.set_page_config(page_title="EquityLens — Market Research", layout="wide")
 apply_theme()
 
-st.markdown("## Market Research")
-st.caption("What you need to know about this asset in the next 30 seconds.")
+page_header("Market Research", subtitle="Technicals, fundamentals, and news for any asset — an analyst's 30-second view.")
 
 settings = load_settings()
 ticker, display_name, asset_class = asset_picker(
     "market_research",
-    default_class=settings.get("default_asset_class", "Stocks"),
+    default_class=settings.get("default_asset_class", "US Stocks"),
     default_asset=settings.get("default_asset"),
 )
 
@@ -76,11 +78,24 @@ with st.spinner(f"Fetching data for {ticker}..."):
 
 if history is None or history.empty or "Close" not in history.columns:
     st.error(
-        f"No data found for '{ticker}'. Check the symbol and try again — "
-        "e.g. 'AAPL' for stocks, 'BTC-USD' for crypto, 'EURUSD=X' for forex, "
-        "'GC=F' for metals futures, '^GSPC' for indices."
+        f"Asset not found. No data for '{ticker}' — check the symbol and try again "
+        "(e.g. 'AAPL' for stocks, 'BTC-USD' for crypto, 'EURUSD=X' for forex, "
+        "'GC=F' for commodity futures, '^GSPC' for indices)."
     )
     st.stop()
+
+# A ticker typed into the search box arrives with asset_class == "Search" —
+# resolve it against the ticker's own quoteType so equity fundamentals still
+# show up for a searched stock exactly as they would for one picked from
+# the curated list. A browsed selection already carries its real class
+# (US Stocks / UK Stocks / Commodities / ...) and is left as-is, since that
+# label is more specific than classify_asset_class's generic "Stock".
+info_for_classification = get_ticker_info(ticker)
+if asset_class == "Search":
+    resolved_asset_class = classify_asset_class(info_for_classification)
+else:
+    resolved_asset_class = asset_class
+is_equity = resolved_asset_class in ("US Stocks", "UK Stocks", "Stock")
 
 # Indicators (moving averages, RSI, 52-week range, ...) need at least a
 # year of history to be meaningful regardless of what chart period is
@@ -101,16 +116,24 @@ current_price = history["Close"].iloc[-1]
 previous_close = history["Close"].iloc[-2] if len(history) > 1 else None
 pct_change = ((current_price - previous_close) / previous_close * 100) if previous_close else None
 
-render_html(f'<p class="el-header">{display_name}</p>')
-render_html(f'<p class="el-subtext">{ticker} · {asset_class}</p>')
-st.write("")
-
-price_col, change_col = st.columns(2)
-price_col.metric("Current Price", f"${current_price:,.4f}" if current_price < 10 else f"${current_price:,.2f}")
-change_col.metric("Change (1D)", f"{pct_change:+.2f}%" if pct_change is not None else "N/A")
+price_str = f"${current_price:,.4f}" if current_price < 10 else f"${current_price:,.2f}"
+render_html(
+    f"""
+    <div style="display:flex; justify-content:space-between; align-items:flex-end;
+                border-bottom:1px solid {BORDER}; padding-bottom:14px; margin-bottom:18px;">
+        <div>
+            <div class="el-header">{display_name}</div>
+            <div class="el-subtext">{ticker} &middot; {resolved_asset_class}</div>
+        </div>
+        <div style="text-align:right;">
+            <div style="font-size:1.5rem; font-weight:700; color:{INK_PRIMARY}; font-variant-numeric:tabular-nums;">{price_str}</div>
+            <div style="font-size:0.9rem; margin-top:1px;">{price_change_html(pct_change)}</div>
+        </div>
+    </div>
+    """
+)
 
 # ---------- Price Statistics (every asset class — price-derived only) ----------
-st.write("")
 st.markdown("#### Price Statistics")
 st.caption(
     "Computed on a trailing 1-year (or longer) price history, independent of the "
@@ -154,7 +177,17 @@ if range_52w and range_52w["high"] != range_52w["low"]:
     )
 
 st.write("")
-st.markdown("#### Price Chart")
+
+# Two-column layout: chart on the left, Research Summary on the right.
+# chart_col is filled immediately below; summary_col is filled much later
+# in this script (once technical/health/events are all computed) — a
+# Streamlit column reference stays valid for the rest of the script run,
+# so content written into it later still renders in this same row, not
+# wherever in the file the write call happens to occur.
+chart_col, summary_col = st.columns([2, 1])
+
+with chart_col:
+    st.markdown("#### Price Chart")
 
 sma50_series = simple_moving_average(indicator_history["Close"], 50)
 sma200_series = simple_moving_average(indicator_history["Close"], 200)
@@ -228,37 +261,30 @@ if has_volume:
     fig.update_xaxes(showgrid=False, row=2, col=1)
     fig.update_yaxes(showgrid=False, row=2, col=1)
 
-st.plotly_chart(fig, use_container_width=True)
+with chart_col:
+    st.plotly_chart(fig, use_container_width=True)
 
 # ---------- Technical Analysis (every asset class — price-derived only) ----------
 st.write("")
-st.markdown("#### Technical Analysis")
+st.markdown("#### Technical View")
 
 technical = compute_technical_rating(indicator_history)
 
 if technical is None:
     st.info("Not enough price history to compute technical signals for this ticker.")
 else:
-    rating_col, counts_col = st.columns([1, 3])
-    with rating_col:
+    with st.container(border=True):
         rating_color = TECHNICAL_RATING_COLORS.get(technical["rating"], INK_SECONDARY)
-        render_html(
-            f"""
-            <div style="text-align:center; padding: 8px 0 16px 0;">
-                <div style="font-size:1.55rem; font-weight:800; color:{rating_color}; line-height:1.2;">
-                    {technical['rating']}
-                </div>
-                <div style="font-size:0.78rem; color:{INK_SECONDARY}; margin-top:8px;">
-                    {technical['total_signals']} signals evaluated
-                </div>
-            </div>
-            """
-        )
-    with counts_col:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Buy Signals", technical["buy_count"])
-        c2.metric("Neutral Signals", technical["neutral_count"])
-        c3.metric("Sell Signals", technical["sell_count"])
+        head_col, meter_col = st.columns([1, 2])
+        with head_col:
+            render_html(status_line_html("Technical", technical["rating"], rating_color))
+            render_html(
+                f'<div style="font-size:0.8rem; color:{INK_SECONDARY}; margin-top:8px;">'
+                f'{technical["buy_count"]} Buy &middot; {technical["neutral_count"]} Neutral &middot; '
+                f'{technical["sell_count"]} Sell <span style="color:{INK_MUTED};">({technical["total_signals"]} signals)</span></div>'
+            )
+        with meter_col:
+            render_html(sentiment_meter_html(technical["rating"]))
 
     st.write("")
     st.markdown("###### Signal Breakdown")
@@ -274,8 +300,9 @@ else:
 st.write("")
 
 # ---------- Equity fundamentals (Stocks only) ----------
-if asset_class == "Stocks":
-    info = get_ticker_info(ticker)
+health = None  # stays None for non-equity assets / invalid equity info — read by Research Summary below
+if is_equity:
+    info = info_for_classification
     if is_valid_ticker(info):
         company_name = info.get("longName") or info.get("shortName") or ticker
         sector = info.get("sector", "N/A")
@@ -363,10 +390,11 @@ if asset_class == "Stocks":
 
         score_col, breakdown_col = st.columns([1, 3])
         with score_col:
+            score_color = RATING_COLORS.get(health["rating"], INK_PRIMARY)
             render_html(
                 f"""
                 <div style="text-align:center; padding: 8px 0 16px 0;">
-                    <div style="font-size:2.75rem; font-weight:800; line-height:1; color:{INK_PRIMARY}; font-variant-numeric:tabular-nums;">
+                    <div style="font-size:2.75rem; font-weight:700; line-height:1; color:{score_color}; font-variant-numeric:tabular-nums;">
                         {health['total_score']}
                     </div>
                     <div style="font-size:0.82rem; color:{INK_SECONDARY}; margin-top:4px;">out of 100</div>
@@ -403,7 +431,122 @@ if asset_class == "Stocks":
     else:
         st.info(f"No equity fundamentals found for '{ticker}'.")
 else:
-    st.info(f"Company fundamentals are available for the Stocks asset class only — '{asset_class}' assets don't have an income statement or P/E ratio.")
+    st.info(f"Company fundamentals are available for individual equities only — '{resolved_asset_class}' assets don't have an income statement or P/E ratio.")
 
 st.write("")
-st.caption("Data source: Yahoo Finance via yfinance. For research purposes only — not investment advice.")
+
+# =====================================================================
+# RESEARCH SUMMARY — three separate lenses shown side by side, never
+# merged into one score. Technical and Financial Health are read straight
+# from what's already been computed above; Event Risk comes from
+# news_calendar.py. This is a factual recap, not a recommendation — see
+# the deterministic sentence built by research_service.build_research_summary_sentence(),
+# which only ever describes what each lens already says.
+# =====================================================================
+relevant_events = get_relevant_events(ticker, resolved_asset_class)
+event_risk = event_risk_summary(relevant_events)
+high_impact_events = event_risk["events"]
+event_risk_label = event_risk["label"]
+event_risk_color = IMPACT_COLORS["High"] if high_impact_events else INK_MUTED
+
+
+# Rendered into summary_col — the column reserved next to the price chart
+# near the top of the page, per Streamlit's "write into a column reference
+# any time later in the script" layout model (see the note above chart_col).
+with summary_col:
+    st.markdown("#### Research Summary")
+    with st.container(border=True):
+        if technical:
+            render_html(status_line_html("Technical", technical["rating"], TECHNICAL_RATING_COLORS.get(technical["rating"], INK_PRIMARY)))
+        else:
+            render_html(status_line_html("Technical", "Insufficient Data", INK_MUTED))
+
+        render_html('<div style="height:12px;"></div>')
+        if health:
+            render_html(status_line_html("Financial Health", f'{health["total_score"]}/100 &middot; {health["rating"]}', RATING_COLORS.get(health["rating"], INK_PRIMARY)))
+        else:
+            render_html(status_line_html("Financial Health", "Not Available", INK_MUTED))
+
+        render_html('<div style="height:12px;"></div>')
+        render_html(status_line_html("Event Risk", event_risk_label, event_risk_color))
+
+        render_html(f'<hr style="margin:14px 0; border-color:{BORDER};">')
+        render_html(f'<p style="color:{INK_SECONDARY}; font-size:0.83rem; line-height:1.55; margin:0;">{build_research_summary_sentence(technical, health, high_impact_events)}</p>')
+
+    st.caption(
+        "Event risk is separate context — it never changes the technical or fundamental read above."
+    )
+
+st.write("")
+
+# =====================================================================
+# NEWS & EVENTS
+# =====================================================================
+st.markdown("#### News & Events")
+
+st.markdown("###### Upcoming High-Impact Events")
+if not relevant_events["available"]:
+    st.info("Economic calendar unavailable right now — the data source could not be reached. Try refreshing in a moment.")
+elif not high_impact_events:
+    st.caption(f"No high-impact events scheduled for {ticker} this week.")
+else:
+    for i, event in enumerate(high_impact_events):
+        impact_color = IMPACT_COLORS.get(event["impact"], INK_MUTED)
+        render_html(
+            f"""
+            <div style="padding:8px 0;">
+                <div style="display:flex; justify-content:space-between; align-items:baseline;">
+                    <div>
+                        <span style="color:{impact_color}; font-weight:700; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em;">{event['impact']} Impact</span>
+                        <span style="color:{INK_PRIMARY}; font-weight:600; margin-left:8px;">{event['title']}</span>
+                        <span style="color:{INK_MUTED}; font-size:0.82rem; margin-left:6px;">({event['currency']})</span>
+                    </div>
+                    <div style="text-align:right; color:{INK_SECONDARY}; font-size:0.82rem;">
+                        {event['time'].strftime('%a %d %b, %H:%M %Z')}<br>
+                        <span style="color:{INK_MUTED};">in {event['time_until']}</span>
+                    </div>
+                </div>
+                <div style="color:{INK_SECONDARY}; font-size:0.82rem; margin-top:4px;">{event['relevance']}</div>
+            </div>
+            """
+        )
+        if i < len(high_impact_events) - 1:
+            render_html(f'<hr style="margin:2px 0; border-color:{BORDER};">')
+    st.caption(
+        "Event risk describes potential volatility around the listed time — it does not predict direction. "
+        "Source: economic calendar feed, updated periodically."
+    )
+
+st.write("")
+
+if is_equity:
+    news_col, earnings_col = st.columns([2, 1])
+    with news_col:
+        st.markdown("###### Company News")
+        articles = get_company_news(ticker)
+        if not articles:
+            st.caption("No recent news found for this ticker.")
+        else:
+            for i, article in enumerate(articles):
+                title_html = f'<a href="{article["url"]}" target="_blank" style="color:{ACCENT_BLUE}; text-decoration:none; font-weight:600;">{article["title"]}</a>' if article.get("url") else f'<span style="font-weight:600; color:{INK_PRIMARY};">{article["title"]}</span>'
+                render_html(
+                    f'<div style="padding:6px 0;">{title_html}'
+                    f'<div style="color:{INK_MUTED}; font-size:0.78rem; margin-top:2px;">{article["publisher"]}</div></div>'
+                )
+                if i < len(articles) - 1:
+                    render_html(f'<hr style="margin:2px 0; border-color:{BORDER};">')
+    with earnings_col:
+        st.markdown("###### Earnings")
+        earnings = get_earnings_info(ticker)
+        if not earnings:
+            st.caption("No upcoming earnings data available.")
+        else:
+            st.metric("Next Earnings Date", str(earnings["next_date"]) if earnings.get("next_date") else "N/A")
+            if earnings.get("eps_estimate") is not None:
+                st.metric("EPS Estimate", f"{earnings['eps_estimate']:.2f}")
+
+st.write("")
+st.caption(
+    "Data sources: Yahoo Finance via yfinance (prices, fundamentals, news, earnings) and a structured economic "
+    "calendar feed (scheduled events). For research purposes only — not investment advice."
+)
