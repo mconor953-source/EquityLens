@@ -55,6 +55,7 @@ app.add_middleware(
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://id-preview--4aa6bb48-0623-4daa-bd99-25fdeb167b42.lovable.app",
+   "https://equitylens-platform.netlify.app",
 ],
     allow_credentials=True,
     allow_methods=["*"],
