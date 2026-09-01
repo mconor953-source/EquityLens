@@ -51,7 +51,11 @@ app = FastAPI(title="EquityLens API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://id-preview--4aa6bb48-0623-4daa-bd99-25fdeb167b42.lovable.app",
+],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
