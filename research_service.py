@@ -26,7 +26,7 @@ from technicals import (
     volume_ratio,
 )
 from news_calendar import get_relevant_events, get_earnings_info
-
+from cache_utils import ttl_cache
 EQUITY_CLASSES = ("US Stocks", "UK Stocks", "Stock")
 
 
@@ -65,6 +65,7 @@ def build_research_summary_sentence(technical: dict, health: dict, high_impact_e
     return sentence[0].upper() + sentence[1:] + "."
 
 
+@ttl_cache(300)
 def build_research_payload(ticker: str, period: str = "1y") -> dict:
     """Full Research payload for one ticker — technical rating, price
     statistics, equity fundamentals + Financial Health Score (when the

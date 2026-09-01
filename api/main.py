@@ -176,7 +176,9 @@ def get_research(ticker: str):
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         raise _map_fetch_error(ticker, exc)
-    return api_response(research)
+    response = dict(research)
+    response["financial_health"] = _shape_financial_health(research.get("financial_health"))
+    return api_response(response)
 
 
 @app.get("/api/technical/{ticker}")
