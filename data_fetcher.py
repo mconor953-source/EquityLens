@@ -276,14 +276,41 @@ QUOTE_TYPE_TO_ASSET_CLASS = {
 
 
 def classify_asset_class(info: dict) -> str:
-    """Map yfinance's quoteType to one of the Investment Ideas asset-class
-    options (Stock/ETF/Index/Forex/Commodity/Crypto/Other). Used to prefill
-    the asset class when creating an idea from a Watchlist ticker — 'Other'
-    for anything yfinance doesn't classify into a known bucket, rather than
-    guessing."""
-    quote_type = (info or {}).get("quoteType", "")
-    return QUOTE_TYPE_TO_ASSET_CLASS.get(quote_type, "Other")
+    """Classify an asset using Yahoo quoteType first, then safe fallbacks."""
+    info = info or {}
 
+    quote_type = str(info.get("quoteType", "")).strip().upper()
+    mapped = QUOTE_TYPE_TO_ASSET_CLASS.get(quote_type)
+    if mapped:
+        return mapped
+
+    symbol = str(info.get("symbol", "")).strip().upper()
+
+    if symbol.startswith("^"):
+        return "Index"
+
+    if symbol.endswith("=X"):
+        return "Forex"
+
+    if symbol.endswith("=F"):
+        return "Commodity"
+
+    if symbol.endswith("-USD") or symbol.endswith("-GBP") or symbol.endswith("-EUR"):
+        return "Crypto"
+
+    if info.get("fundFamily") or info.get("category"):
+        return "ETF"
+
+    if (
+        info.get("sector")
+        or info.get("industry")
+        or info.get("marketCap") is not None
+        or info.get("enterpriseValue") is not None
+    ):
+        return "Stock"
+
+    return "Other"
+    
 
 def get_extended_metrics(info: dict) -> dict:
     """Extract growth, profitability, financial position, and valuation figures
