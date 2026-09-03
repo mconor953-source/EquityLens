@@ -84,9 +84,9 @@ def _with_retries(description: str, fetch):
     raise last_exc
 
 
-@ttl_cache(300)
+@ttl_cache(1800)
 def get_ticker_info(ticker: str) -> dict:
-    """Fetch company/financial info for a ticker. Cached for 5 minutes.
+    """Fetch company/financial info for a ticker. Cached for 30 minutes.
 
     Every caller in this app relies on this never raising — they check
     is_valid_ticker(info) on the result rather than wrapping the call in
@@ -102,9 +102,9 @@ def get_ticker_info(ticker: str) -> dict:
         return {}
 
 
-@ttl_cache(300)
+@ttl_cache(1800)
 def get_price_history(ticker: str, period: str = "1y") -> pd.DataFrame:
-    """Fetch historical OHLCV price data for a ticker. Cached for 5 minutes.
+    """Fetch historical OHLCV price data for a ticker. Cached for 30 minutes.
 
     yfinance sometimes includes a trailing row for the current, still-open
     session with no data yet (all-NaN OHLC) — that row is dropped so charts
@@ -126,7 +126,7 @@ def get_price_history(ticker: str, period: str = "1y") -> pd.DataFrame:
     return _with_retries(f"get_price_history({ticker}, period={period})", _fetch)
 
 
-@ttl_cache(300)
+@ttl_cache(1800)
 def get_intraday_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
     """Fetch intraday OHLC data at a specific interval (e.g. "1h", "15m",
     "5m") — used by market_structure.py for multi-timeframe analysis.

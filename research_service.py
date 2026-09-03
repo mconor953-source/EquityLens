@@ -65,7 +65,7 @@ def build_research_summary_sentence(technical: dict, health: dict, high_impact_e
     return sentence[0].upper() + sentence[1:] + "."
 
 
-@ttl_cache(300)
+@ttl_cache(1800)
 def build_research_payload(ticker: str, period: str = "1y") -> dict:
     """Full Research payload for one ticker — technical rating, price
     statistics, equity fundamentals + Financial Health Score (when the
