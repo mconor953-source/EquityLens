@@ -1,15 +1,104 @@
-"""Data access layer: wraps yfinance calls and formats raw numbers for display."""
+"""Data access layer: wraps yfinance calls and formats raw numbers for display.
+
+Root cause of the "everything shows N/A at once" failure mode: by default,
+yfinance sets `yf.config.debug.hide_exceptions = True`, which makes it
+silently swallow real fetch errors (HTTP errors, rate limits, timeouts) and
+just return an empty DataFrame — no exception raised, nothing logged
+anywhere. When Yahoo has a momentary hiccup, every ticker in a batch fails
+the same silent way at once, and there's no diagnostic trail to tell "Yahoo
+rate-limited us" apart from "these are somehow all invalid tickers." That
+flag is flipped off below so failures actually raise and can be logged.
+
+Yahoo Finance occasionally rate-limits or momentarily rejects a request —
+not a code bug, just the reality of a free, unofficial data source. Every
+network call in this module goes through _with_retries() so a single
+transient blip (one dropped connection, one 429) doesn't have to fail the
+whole Dashboard: it's retried a couple of times with a short backoff before
+the caller ever sees an exception. Failures (transient or final) are logged
+to the terminal via the standard `logging` module so they're diagnosable —
+never as a raw traceback shown to the user, who instead sees a plain "N/A"
+or "data unavailable" from the calling view.
+"""
+
+import logging
+import time
 
 import yfinance as yf
 import pandas as pd
 import streamlit as st
+from yfinance.exceptions import YFTickerMissingError, YFPricesMissingError
+
+yf.config.debug.hide_exceptions = False
+
+logger = logging.getLogger("equitylens.data_fetcher")
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+MAX_ATTEMPTS = 3            # 1 initial try + 2 retries
+RETRY_BACKOFF_SECONDS = 0.6  # multiplied by attempt number between tries
+
+
+def _is_permanent_failure(exc: Exception) -> bool:
+    """True for a genuinely invalid/delisted ticker — retrying a 404 or a
+    "no data for this symbol" error just wastes time, since Yahoo will say
+    the same thing every attempt. Everything else (rate limits, timeouts,
+    connection resets, 5xx) is treated as possibly transient and retried —
+    that's the failure mode this module exists to absorb."""
+    if isinstance(exc, (YFTickerMissingError, YFPricesMissingError)):
+        return True
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    return status_code == 404
+
+
+def _with_retries(description: str, fetch):
+    """Call the no-arg `fetch` callable, retrying transient failures with a
+    short backoff. Logs every attempt; re-raises the last exception once
+    attempts are exhausted (or immediately, for a permanent failure) so
+    existing callers' try/except (they all already have one — see
+    get_current_price_and_change and every view) keeps working exactly as
+    before, just with real transient failures now self-healing instead of
+    surfacing on the first hiccup."""
+    last_exc = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return fetch()
+        except Exception as exc:
+            last_exc = exc
+            permanent = _is_permanent_failure(exc)
+            logger.warning(
+                "%s failed (attempt %d/%d, %s): %s: %s",
+                description, attempt, MAX_ATTEMPTS,
+                "not retrying — no data for this ticker" if permanent else "will retry",
+                type(exc).__name__, exc,
+            )
+            if permanent:
+                raise
+            if attempt < MAX_ATTEMPTS:
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+    logger.error("%s failed after %d attempts — giving up.", description, MAX_ATTEMPTS)
+    raise last_exc
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_ticker_info(ticker: str) -> dict:
-    """Fetch company/financial info for a ticker. Cached for 5 minutes."""
-    stock = yf.Ticker(ticker)
-    return stock.info
+    """Fetch company/financial info for a ticker. Cached for 5 minutes.
+
+    Every caller in this app relies on this never raising — they check
+    is_valid_ticker(info) on the result rather than wrapping the call in
+    try/except. That contract is preserved here: retries happen internally,
+    and a final failure (invalid ticker, or Yahoo still down after retries)
+    is logged and returned as {} — which is_valid_ticker() already reads as
+    "no data" — rather than propagating an exception nothing upstream
+    expects.
+    """
+    try:
+        return _with_retries(f"get_ticker_info({ticker})", lambda: yf.Ticker(ticker).info)
+    except Exception:
+        return {}
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -19,12 +108,48 @@ def get_price_history(ticker: str, period: str = "1y") -> pd.DataFrame:
     yfinance sometimes includes a trailing row for the current, still-open
     session with no data yet (all-NaN OHLC) — that row is dropped so charts
     and price calculations never end on an empty bar.
+
+    An empty result is treated as a retryable failure too (not just a raised
+    exception): Yahoo occasionally returns a 200 with no rows for a
+    known-good ticker during a rate-limited window, which looks identical to
+    "no data" but usually clears up within a retry or two.
     """
-    stock = yf.Ticker(ticker)
-    history = stock.history(period=period)
-    if "Close" in history.columns:
-        history = history.dropna(subset=["Close"])
-    return history
+    def _fetch():
+        history = yf.Ticker(ticker).history(period=period)
+        if history is None or history.empty:
+            raise ValueError(f"empty price history returned for '{ticker}' (period={period})")
+        if "Close" in history.columns:
+            history = history.dropna(subset=["Close"])
+        return history
+
+    return _with_retries(f"get_price_history({ticker}, period={period})", _fetch)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_intraday_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
+    """Fetch intraday OHLC data at a specific interval (e.g. "1h", "15m",
+    "5m") — used by market_structure.py for multi-timeframe analysis.
+    Separate from get_price_history because Yahoo's intraday endpoint has
+    real limits get_price_history's daily-only callers never hit: 1h data
+    only goes back ~730 days, 15m/5m only ~60 days. Same retry/logging
+    behavior as get_price_history — an empty result is retried, then
+    raised, and every caller is expected to catch it (market_structure.py
+    treats a failed timeframe as "insufficient data" for that timeframe,
+    never a whole-page crash).
+
+    Yahoo has no native 4-hour interval; market_structure.py builds 4H bars
+    by resampling 1h data itself (see resample_to_4h there) rather than
+    this function pretending interval="4h" is a real yfinance option.
+    """
+    def _fetch():
+        history = yf.Ticker(ticker).history(period=period, interval=interval)
+        if history is None or history.empty:
+            raise ValueError(f"empty intraday history returned for '{ticker}' (period={period}, interval={interval})")
+        if "Close" in history.columns:
+            history = history.dropna(subset=["Close"])
+        return history
+
+    return _with_retries(f"get_intraday_history({ticker}, period={period}, interval={interval})", _fetch)
 
 
 def get_current_price_and_change(ticker: str, period: str = "5d"):
@@ -136,6 +261,27 @@ def get_analyst_consensus(info: dict) -> dict:
         "target_high": info.get("targetHighPrice"),
         "target_low": info.get("targetLowPrice"),
     }
+
+
+QUOTE_TYPE_TO_ASSET_CLASS = {
+    "EQUITY": "Stock",
+    "ETF": "ETF",
+    "INDEX": "Index",
+    "CURRENCY": "Forex",
+    "CRYPTOCURRENCY": "Crypto",
+    "FUTURE": "Commodity",
+    "COMMODITY": "Commodity",
+}
+
+
+def classify_asset_class(info: dict) -> str:
+    """Map yfinance's quoteType to one of the Investment Ideas asset-class
+    options (Stock/ETF/Index/Forex/Commodity/Crypto/Other). Used to prefill
+    the asset class when creating an idea from a Watchlist ticker — 'Other'
+    for anything yfinance doesn't classify into a known bucket, rather than
+    guessing."""
+    quote_type = (info or {}).get("quoteType", "")
+    return QUOTE_TYPE_TO_ASSET_CLASS.get(quote_type, "Other")
 
 
 def get_extended_metrics(info: dict) -> dict:

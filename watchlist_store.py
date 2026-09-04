@@ -7,7 +7,7 @@ remember what you put in it across restarts.
 
 No Streamlit dependency here on purpose: this is plain file I/O,
 independently testable, same "no UI here" separation as scoring.py and
-trade_calculator.py.
+idea_engine.py.
 """
 
 import json
@@ -18,7 +18,7 @@ STORE_PATH = DATA_DIR / "watchlists.json"
 
 DEFAULT_WATCHLISTS = {
     "Long-Term Investing": ["AAPL", "MSFT", "GOOGL", "JNJ", "KO"],
-    "Swing Trade Watchlist": ["TSLA", "NVDA", "AMD"],
+    "Momentum Watchlist": ["TSLA", "NVDA", "AMD"],
 }
 
 
